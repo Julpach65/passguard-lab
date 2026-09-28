@@ -223,18 +223,20 @@ dominio `<cuenta>.pythonanywhere.com`, con el directorio de código fijado en
    `from wsgi import app`:
 
    ```python
-   import os
    import sys
 
    # Imprescindible: el fichero WSGI que genera PythonAnywhere vive en
-   # var/www/, no en el proyecto, y solo añade su propio directorio a
+   # /var/www/, no en el proyecto, y solo añade su propio directorio a
    # sys.path. Como wsgi.py hace "from app import app", el proyecto tiene que
    # estar en la ruta o el import falla con ModuleNotFoundError.
-   path = os.path.expanduser('~/passguard-lab')
+   path = '/home/<cuenta>/passguard-lab'
    if path not in sys.path:
        sys.path.insert(0, path)
 
-   from wsgi import app  # noqa: E402
+   # "as application" no es cosmético: PythonAnywhere busca una variable
+   # llamada exactamente application en este fichero. Sin el alias, el
+   # servidor no encuentra nada que servir.
+   from wsgi import app as application  # noqa: E402
    ```
 
 2. **Environment variables**:
