@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PassGuard Lab - Analizador de contraseñas (UPSIN, Seguridad de la Información)</title>
+<meta name="description" content="Laboratorio de análisis de contraseñas: entropía, política institucional, verificación de brechas con k-anonymity y generador de contraseñas. UPSIN Colombia, Seguridad de la Información.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0D1117">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230D1117'/%3E%3Cpath d='M11 16v-4a5 5 0 0 1 10 0v4' fill='none' stroke='%2300FF41' stroke-width='2.5'/%3E%3Crect x='8' y='16' width='16' height='11' rx='2' fill='none' stroke='%2300FF41' stroke-width='2.5'/%3E%3Ccircle cx='16' cy='21' r='1.8' fill='%2300FF41'/%3E%3C/svg%3E">
+</head>
+<body>
+<a class="skip-link" href="#panel-analizador">Saltar al analizador</a>
+
+<noscript>
+  <div class="noscript-banner" role="alert">
+    <strong>JavaScript está desactivado.</strong>
+    PassGuard Lab calcula la entropía, descarga la política del servidor y verifica brechas en el
+    navegador, por lo que necesita JavaScript. Dos ideas que puedes aplicar a mano: cada carácter aleatorio
+    aporta log2(N) bits, donde N es el tamaño del alfabeto usado, y una cadena de 16 caracteres
+    realmente aleatorios resiste mucho mejor que una de 12 construida con reglas de composición.
+  </div>
+</noscript>
+
+<header class="site-header">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">&#9678;</span>
+    <div class="brand-text">
+      <h1>PassGuard<span class="brand-accent">.lab</span></h1>
+      <p class="tagline">Laboratorio de análisis de contraseñas &middot; UPSIN &middot; Seguridad de la Información &middot; 2026-C1</p>
+    </div>
+  </div>
+
+  <div class="conn" role="group" aria-labelledby="conn-label">
+    <h2 class="sr-only" id="conn-label">Estado de la conexión con el servicio de análisis</h2>
+    <p class="conn-badge" id="status-badge" data-state="checking">
+      <span class="conn-dot" id="status-dot" aria-hidden="true"></span>
+      <span id="status-text">Comprobando...</span>
+    </p>
+    <button type="button" class="btn btn-ghost" id="btn-recheck">Reintentar conexión</button>
+  </div>
+
+  <dl class="meta">
+    <div class="meta-item">
+      <dt>Política</dt>
+      <dd id="policy-version">&mdash;</dd>
+    </div>
+    <div class="meta-item">
+      <dt>Corpus del servidor</dt>
+      <dd id="policy-corpus">&mdash;</dd>
+    </div>
+  </dl>
+</header>
+
+<main class="layout">
+
+  <section class="panel" id="panel-analizador" aria-labelledby="h-analyzer">
+    <div class="panel-head">
+      <h2 id="h-analyzer"><span class="panel-index" aria-hidden="true">01</span> Analizador</h2>
+      <p class="panel-sub">Prevalidación instantánea en el navegador y veredicto autoritativo del servidor Python.</p>
+    </div>
+
+    <div class="field">
+      <label class="label" for="pw-input">Contraseña a analizar</label>
+      <div class="input-row" id="pw-input-wrap">
+        <input class="input mono" type="password" id="pw-input" name="password"
+               placeholder="Escribe o pega una contraseña"
+               autocomplete="new-password" maxlength="128"
+               spellcheck="false" autocapitalize="off" autocorrect="off"
+               aria-describedby="pw-hint">
+        <button type="button" class="btn btn-icon" id="btn-toggle-pw" aria-pressed="false"
+                aria-label="Mostrar contraseña" title="Mostrar contraseña">
+          <span aria-hidden="true">&#9673;</span>
+        </button>
+        <button type="button" class="btn btn-icon" id="btn-clear-pw" aria-label="Limpiar contraseña" title="Limpiar contraseña">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <p class="hint" id="pw-hint">Nada se persiste. La contraseña viaja al servidor solo durante la petición de análisis.</p>
+    </div>
+
+    <div class="meter" id="pw-meter" aria-busy="false">
+      <div class="meter-head">
+        <p class="meter-score">
+          <span class="score-badge" id="strength-score">&ndash;</span>
+          <span class="score-label" id="strength-label">Sin contraseña</span>
+        </p>
+        <p class="meter-status" id="analyze-status" data-state="idle">
+          <span class="spinner" aria-hidden="true"></span>
+          <span class="status-text">análisis preciso...</span>
+        </p>
+      </div>
+      <div class="bar">
+        <div class="bar-fill" id="strength-fill"></div>
+        <div class="bar-ticks" aria-hidden="true"></div>
+      </div>
+      <p class="sr-only" id="verdict-live" aria-live="polite" aria-atomic="true"></p>
+    </div>
+
+    <div class="notice" id="notice-fallback" data-tone="warn" hidden>
+      <div class="notice-body">
+        <p class="notice-title">Análisis local: no se pudo contactar el servidor.</p>
+        <p class="notice-detail" id="fallback-detail">Esto no es un problema: la estimación del navegador cubre longitud, clases de caracteres, entropía por alfabeto y los patrones más habituales.</p>
+      </div>
+      <button type="button" class="btn" id="btn-retry">Reintentar</button>
+    </div>
+
+    <div class="split">
+      <section class="subpanel" aria-labelledby="h-requirements">
+        <h3 id="h-requirements">Requisitos de la política</h3>
+        <ul class="req-list" id="requirements-list" aria-labelledby="h-requirements"></ul>
+      </section>
+
+      <section class="subpanel" aria-labelledby="h-metrics">
+        <h3 id="h-metrics">Métricas</h3>
+        <dl class="metrics">
+          <div class="metric"><dt>Entropía estimada</dt><dd class="mono" id="metric-entropy">&mdash;</dd></div>
+          <div class="metric"><dt>Alfabeto</dt><dd class="mono" id="metric-charset">&mdash;</dd></div>
+          <div class="metric"><dt>Intentos (log10)</dt><dd class="mono" id="metric-guesses">&mdash;</dd></div>
+          <div class="metric"><dt>Tiempo de ruptura</dt><dd class="mono" id="metric-cracktime">&mdash;</dd></div>
+          <div class="metric"><dt>Cumple política</dt><dd class="mono" id="metric-valid">&mdash;</dd></div>
+          <div class="metric"><dt>Fuente del dato</dt><dd class="mono" id="metric-source">&mdash;</dd></div>
+        </dl>
+      </section>
+    </div>
+    <section class="subpanel" aria-labelledby="h-findings">
+      <h3 id="h-findings">Hallazgos</h3>
+      <ul class="findings" id="findings-list" aria-labelledby="h-findings"></ul>
+      <p class="explanation" id="explanation-text">Escribe una contraseña para ver el análisis.</p>
+    </section>
+
+    <section class="subpanel" aria-labelledby="h-hibp">
+      <h3 id="h-hibp">Verificación de brechas (k-anonymity)</h3>
+      <p class="prose">
+        El hash SHA-1 se calcula <strong>dentro del navegador</strong>, en un Web Worker, y al servidor
+        solo viajan los 5 primeros dígitos hexadecimales. El hash completo nunca sale del dispositivo.
+      </p>
+      <div class="hibp" id="hibp-panel" data-state="idle">
+        <p class="hibp-state">
+          <span class="chip" id="hibp-state" data-state="idle">inactivo</span>
+          <span class="mono hibp-count" id="hibp-count"></span>
+        </p>
+        <p class="hint">Mientras la comprobación está activa el campo permanece enmascarado.</p>
+      </div>
+    </section>
+
+    <section class="subpanel" aria-labelledby="h-audit">
+      <h3 id="h-audit">Recibo de auditoría</h3>
+      <p class="prose">
+        Envía al servidor un recibo firmado del análisis: dos análisis de la misma contraseña
+        producen el mismo recibo, y el servidor no guarda la contraseña sino solo su
+        HMAC-SHA-256 con una clave aleatoria que se descarta al reiniciar el proceso, de modo
+        que los recibos de dos reinicios distintos no se pueden comparar entre sí.
+      </p>
+      <div class="audit-row">
+        <button type="button" class="btn" id="btn-audit">Emitir recibo</button>
+        <span class="audit-status mono" id="audit-status"></span>
+      </div>
+      <output class="receipt mono" id="audit-receipt" aria-label="Recibo de auditoría"></output>
+    </section>
+  </section>
+
+  <section class="panel" id="panel-generador" aria-labelledby="h-generator">
+    <div class="panel-head">
+      <h2 id="h-generator"><span class="panel-index" aria-hidden="true">02</span> Generador</h2>
+      <p class="panel-sub">Contraseñas aleatorias criptográficamente. El servidor es la fuente; si no responde, el navegador genera con <code>crypto.getRandomValues</code>.</p>
+    </div>
+
+    <form id="gen-form" novalidate>
+      <div class="field">
+        <label class="label" for="gen-length">Longitud: <output class="mono" id="gen-length-value" for="gen-length">20</output> caracteres</label>
+        <input class="range" type="range" id="gen-length" name="length" min="12" max="64" step="1" value="20"
+               aria-describedby="gen-len-bounds">
+        <p class="hint" id="gen-len-bounds">Rango visible 12&ndash;64. La política admite hasta 128.</p>
+      </div>
+
+      <div class="field">
+        <label class="label" for="gen-alphabet">Alfabeto</label>
+        <select class="input" id="gen-alphabet" name="alphabet">
+          <option value="alnum">alfanum&eacute;rico &mdash; aA0-9</option>
+          <option value="web" selected>web &mdash; aA0-9 y símbolos seguros para URL</option>
+          <option value="full">completo &mdash; aA0-9 y todos los símbolos imprimibles</option>
+        </select>
+      </div>
+
+      <fieldset class="field">
+        <legend class="label">Grupos de caracteres</legend>
+        <div class="toggles">
+          <label class="switch" for="gen-use-lower"><input type="checkbox" id="gen-use-lower" checked><span class="switch-box" aria-hidden="true"></span>Minúsculas a-z</label>
+          <label class="switch" for="gen-use-upper"><input type="checkbox" id="gen-use-upper" checked><span class="switch-box" aria-hidden="true"></span>Mayúsculas A-Z</label>
+          <label class="switch" for="gen-use-digits"><input type="checkbox" id="gen-use-digits" checked><span class="switch-box" aria-hidden="true"></span>Dígitos 0-9</label>
+          <label class="switch" for="gen-use-symbols"><input type="checkbox" id="gen-use-symbols" checked><span class="switch-box" aria-hidden="true"></span>Símbolos</label>
+        </div>
+        <p class="hint">Desmarcar un grupo reduce el alfabeto. Si la combinación no corresponde a un alfabeto estándar, la generación se resuelve en el navegador.</p>
+      </fieldset>
+
+      <div class="split split-2">
+        <div class="field">
+          <label class="label" for="gen-min-classes">Clases de caracteres distintas mínimas</label>
+          <select class="input" id="gen-min-classes" name="min_classes">
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="4">4</option>
+          </select>
+        </div>
+        <div class="field">
+          <span class="label">Carácteres ambiguos</span>
+          <label class="switch" for="gen-avoid-ambiguous">
+            <input type="checkbox" id="gen-avoid-ambiguous" checked aria-describedby="hint-ambiguous">
+            <span class="switch-box" aria-hidden="true"></span>Excluir 0 O 1 l I
+          </label>
+          <p class="hint" id="hint-ambiguous">En un diccionario 0/O y 1/l/I se confunden; excluirlos baja algo la entropía pero evita errores al transcribir.</p>
+        </div>
+      </div>
+
+      <div class="gen-actions">
+        <button type="submit" class="btn btn-primary" id="gen-submit">Generar</button>
+        <button type="button" class="btn btn-ghost" id="btn-gen-analyze">Usar en el analizador</button>
+      </div>
+    </form>
+
+    <div class="field">
+      <label class="label" for="gen-output">Contraseña generada (solo lectura)</label>
+      <div class="input-row">
+        <input class="input mono" type="text" id="gen-output" readonly spellcheck="false"
+               autocomplete="off" aria-describedby="gen-status">
+        <button type="button" class="btn btn-icon" id="btn-gen-copy" aria-label="Copiar contraseña generada" title="Copiar">
+          <span aria-hidden="true">&#10697;</span>
+        </button>
+      </div>
+      <p class="gen-status" id="gen-status" role="status">Aún no has generado nada.</p>
+    </div>
+
+    <dl class="metrics">
+      <div class="metric"><dt>Entropía</dt><dd class="mono" id="gen-entropy">&mdash;</dd></div>
+      <div class="metric"><dt>Tamaño del alfabeto</dt><dd class="mono" id="gen-alphabet-size">&mdash;</dd></div>
+      <div class="metric"><dt>Clases presentes</dt><dd class="mono" id="gen-classes">&mdash;</dd></div>
+      <div class="metric"><dt>Cumple política</dt><dd class="mono" id="gen-policy">&mdash;</dd></div>
+    </dl>
+    <p class="explanation" id="gen-analysis">El análisis detallado de la contraseña generada se muestra aquí.</p>
+  </section>
+  <section class="panel panel-guide" id="panel-guia" aria-labelledby="h-guide">
+    <div class="panel-head">
+      <h2 id="h-guide"><span class="panel-index" aria-hidden="true">03</span> Guía educativa</h2>
+      <p class="panel-sub">La parte conceptual del laboratorio: por qué la entropía manda sobre las reglas de composición.</p>
+    </div>
+
+    <details class="qa" open>
+      <summary>1. Qué es la entropía en bits y por qué importan más los bits que los caracteres</summary>
+      <div class="qa-body">
+        <p>
+          La entropía mide el grado de incertidumbre de un valor. En una contraseña bien generada es
+          el número de bits que un atacante tendría que acertar por azar. Cada carácter tomado de un
+          alfabeto de tamaño <em>N</em> aporta <code>log2(N)</code> bits:
+        </p>
+        <ul>
+          <li>Solo dígitos, alfabeto de 10: <code>log2(10) = 3,32</code> bits por carácter.</li>
+          <li>Letras y dígitos, alfabeto de 62: <code>log2(62) = 5,95</code> bits por carácter.</li>
+          <li>Todos los imprimibles, alfabeto de 95: <code>log2(95) = 6,57</code> bits por carácter.</li>
+        </ul>
+        <p>
+          Multiplicando por la longitud sale el espacio de búsqueda real. Una contraseña de 16 caracteres
+          sobre 62 símbolos tiene unos 95 bits, es decir del orden de 3,9 &times; 10<sup>28</sup>
+          combinaciones. Comparado con eso, un carácter más o menos parece irrelevante, y sin embargo no lo
+          es: pasar de 62 a 95 símbolos a la misma longitud añade unos 10 bits, y 10 bits equivalen a
+          multiplicar por 1024 el esfuerzo del atacante.
+        </p>
+        <p>
+          La longitud manda porque crece de forma <strong>lineal</strong>; el alfabeto crece de forma
+          <strong>logarítmica</strong>. Ese es el motivo por el que "más larga" gana a "más compleja" casi
+          siempre. Y hay una trampa: la fórmula solo vale si los caracteres son realmente aleatorios e
+          independientes. Si alguien escribe <code>Monterrey2026!</code> los caracteres están
+          correlacionados, y los bits reales son mucho menores. Por eso un estimador serio analiza patrones y
+          penaliza la estructura en vez de multiplicar sin mirar.
+        </p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>2. Por qué <code>P4$$w0rd!2024</code> es débil aunque cumpla las cinco reglas clásicas</summary>
+      <div class="qa-body">
+        <p>
+          <code>P4$$w0rd!2024</code> cumple mayúscula, minúscula, número, símbolo y longitud. Y añade
+          años, un atacante razonador no necesita fuerza bruta: ese candidato se genera en milisegundos con
+          la lógica "palabra en español + año en curso + dos sustituciones". Su espacio de búsqueda real
+          es el espacio de búsqueda de los patrones, no el de 95<sup>13</sup>.
+        </p>
+        <p>
+          August Kerckhoffs lo dijo mejor: la seguridad de un sistema no debe depender de que el secreto sea
+          oculto. Si la contraseña vive en la cabeza de una persona, esa persona es el secreto, y las
+          personas se filtran. Los diccionarios de ataque reales están hechos de lo que la gente
+          elige de verdad, que ocupa una fracción diminuta y bien conocida del espacio posible.
+        </p>
+        <p>
+          El modelo predictivo es el que implementa esta aplicación: no basta con "cumple la política".
+          Hay que estimar bits y contrastar contra el corpus de contraseñas comunes del servidor.
+        </p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>3. Los seis patrones que casi todo el mundo usa</summary>
+      <div class="qa-body">
+        <ol class="patterns">
+          <li>
+            <strong>Años y fechas.</strong> <code>2024</code>, <code>1998</code>, <code>15/08/2010</code>. El
+            año en curso está casi siempre en el top de los diccionarios.
+          </li>
+          <li>
+            <strong>Nombre y apellidos.</strong> <code>juanp</code>, <code>maria</code>, <code>sofia</code> más
+            el así. Se prueban en minutos porque son datos públicos en redes sociales, padrones y perfiles.
+          </li>
+          <li>
+            <strong>Teclado.</strong> Recorridos contiguos: <code>qwerty</code>, <code>asdfgh</code>,
+            <code>1qaz2wsx</code>, <code>poiuy</code>. Son memorizables y por tanto esperables.
+          </li>
+          <li>
+            <strong>Secuencias.</strong> <code>123456</code>, <code>abcdef</code>, <code>654321</code>. La regla
+            <code>no_sequence</code> las detecta.
+          </li>
+          <li>
+            <strong>Repeticiones.</strong> <code>aaaa</code>, <code>abcabcabc</code>, <code>111</code>. Una serie
+            de ocho bloques iguales aporta 8 bits, no 8 por 3.
+          </li>
+          <li>
+            <strong>Sustituciones l33t.</strong> <code>p4ssw0rd</code> se reduce a <code>password</code>,
+            <code>@dmin</code> a <code>admin</code>. Los diccionarios de ataque traen todas las variantes, as
+            que sustituir no añade nada.
+          </li>
+        </ol>
+      </div>
+    </details>
+    <details class="qa">
+      <summary>4. Frase larga (passphrase) frente a caracteres aleatorios: cuándo conviene cada una</summary>
+      <div class="qa-body">
+        <p>
+          Una frase larga es un modelo booleano con un diccionario de palabras. Si cada palabra sale de una lista de
+          7776 palabras, cada palabra aporta log2(7776) = 12,92 bits. Cinco palabras equivalen a unos 64
+          bits de la frase completa, y el cerebro solo tiene que recordar cinco palabras.
+        </p>
+        <table>
+          <caption>Comparación orientativa, suponiendo 10<sup>10</sup> intentos por segundo</caption>
+          <thead>
+            <tr><th>Opción</th><th>Bits aprox.</th><th>Esfuerzo del atacante</th><th>Memoria</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>8 caracteres con reglas</td><td class="mono">26</td><td>segundos</td><td>fácil</td></tr>
+            <tr><td>12 caracteres con reglas</td><td class="mono">40</td><td>unas horas</td><td>media</td></tr>
+            <tr><td>16 caracteres con reglas</td><td class="mono">53</td><td>años</td><td>media</td></tr>
+            <tr><td>5 palabras de frase larga</td><td class="mono">64</td><td>billones de años</td><td>alta</td></tr>
+            <tr><td>20 caracteres aleatorios</td><td class="mono">119</td><td>tiempos del universo</td><td>baja, se anota</td></tr>
+          </tbody>
+        </table>
+        <p>
+          La frase larga gana cuando el recuerdo importa. Sus 64 bits proceden de 65.536 &times; 65.536
+          &times; 65.536 &times; 65.536 &times; 65.536 combinaciones, pero solo hay que memorizar cinco
+          palabras. La clave de su efectividad es que las palabras viven en un espacio reducido pero
+          <em>conocido</em> por el atacante: por eso importa más el número de palabras que la variedad de
+          caracteres. Cuatro palabras son unos 52 bits, cinco son 64, seis son 77. Cada palabra extra vale más
+          que duplicar el alfabeto.
+        </p>
+        <p>
+          Los caracteres aleatorios ganan en todo lo demás. Una GPU moderna puede probar del orden de
+          10<sup>10</sup> a 10<sup>11</sup> hashes SHA-256 por segundo, pero solo en ataque
+          <strong>offline</strong>, es decir cuando el atacante ya tiene el hash en la mano y solo le queda
+          probar candidatos. Ahí la longitud de la clave es lo único que decide el resultado. Una frase
+          larga de cinco palabras resiste ese mismo ritmo, y una frase larga de siete palabras lo aplasta.
+        </p>
+        <p>
+          Recomendación práctica: frases largas para cuentas que hay que memorizar y que importan mucho
+          (correo, banca, el administrador), y un gestor de contraseñas para el resto. Lo que nunca conviene
+          es reutilizar: una sola contraseña filtrada compromete todas las cuentas donde se repita.
+        </p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>5. Por qué el verificador NO consulta si tu contraseña está en una brecha</summary>
+      <div class="qa-body">
+        <p>
+          Consultarlo tal cual sería una fuga: si el navegador envía la contraseña, cada petición es una
+          entrega de la clave a un tercero. Por eso el mecanismo correcto es el de <strong>k-anonymity</strong>,
+          el mismo que usa Have I Been Pwned.
+        </p>
+        <ol class="steps">
+          <li>El navegador calcula el SHA-1 de la contraseña, aquí dentro, en un Web Worker.</li>
+          <li>Se queda con los 5 primeros dígitos hexadecimales y descarta el resto.</li>
+          <li>Envía solo ese prefijo. El servidor recibe algo como <code>5BAA6</code> y no puede reconstruir
+              la contraseña: el SHA-1 es unidireccional y le faltan 35 dígitos de hexadecimal.</li>
+          <li>El servidor devuelve los sufijos de todos los hashes que empiezan por ese prefijo.</li>
+          <li>El navegador busca su propio sufijo en esa lista. Solo ahí se produce el cruce de datos.</li>
+        </ol>
+        <p>
+          El prefijo de 5 dígitos reparte las contraseñas en 16<sup>5</sup> = 1.048.576 cubos. El servidor
+          responde con la lista de un cubo, que es una fracción del total, y el navegador hace el cruce y decide. El
+          servidor nunca ve la contraseña ni su hash completo. El coste es que el servidor recibe
+          información sobre qué hashes existen, y por eso el modelo se apoya en que ese conjunto cambia
+          poco y que además ese conjunto es público dentro de la comunidad de seguridad, así que el modelo funciona en la práctica.
+        </p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>6. Por qué esta aplicación envía la contraseña a un servidor, y por qué eso es un compromiso</summary>
+      <div class="qa-body">
+        <p>
+          El riesgo es la tensión que está en el centro del ejercicio. Un analizador de contraseñas que manda la
+          contraseña a un servidor es, técnicamente, un servicio que recoge contraseñas. PassGuard lo
+          hace porque es un laboratorio de asignatura: hace falta el corpus de 20.000 contraseñas
+          comunes, el diccionario de política y una estimación de tiempo de ruptura que el navegador no
+          puede hacer bien. El precio es la exposición de la cadena en tránsito, en la memoria del
+          proceso del servidor y en sus registros.
+        </p>
+        <p>Qué haríamos en un sistema real, en este orden de preferencia:</p>
+        <ul>
+          <li><strong>Analizador 100 % local.</strong> WebAssembly con el mismo corpus empaquetado. No sale
+              nada del dispositivo. Es la opción correcta y la que recomendaría en producción.</li>
+          <li><strong>Solo la métrica, no la clave.</strong> Si el servidor debe participar, que reciba el
+              análisis ya hecho (bits, hallazgos) y no la contraseña. Así el análisis sigue siendo
+              posible y la exposición desaparece.</li>
+          <li><strong>Como mínimo, TLS y cero registros.</strong> HTTPS con HSTS, la contraseña nunca se
+              escribe en logs, no se guarda en base de datos, se descarta al terminar la petición y los
+              logs se neutralizan en el middleware. Además, política de retención cero y aviso al
+              usuario de que está escribiendo su clave en un servidor ajeno.</li>
+        </ul>
+        <p>
+          En este laboratorio el envío se hace además con un preflight CORS: la petición incluye la
+          cabecera <code>X-Passguard-Client: 1</code>, que el navegador no permite poner desde un simple
+          formulario ni desde otro origen sin autorización. Ninguna página externa tendrá que pasar
+          por CORS, y el servidor solo admite los orígenes de la lista blanca. No es autenticación, pero
+          sí elimina el escenario de "una web cualquiera captura contraseñas desde el navegador de la
+          víctima".
+        </p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>7. NIST SP 800-63B: longitud mínima, listas de bloqueo y el papel real de la composición</summary>
+      <div class="qa-body">
+        <p>
+          La publicación <em>Digital Identity Guidelines: Authentication and Lifecycle Management</em>, en
+          su sección 3.1.1, es la referencia actual. Sus recomendaciones operativas:
+        </p>
+        <ul>
+          <li><strong>Longitud mínima de 15 caracteres</strong> para contraseñas elegidas por el usuario;
+              hasta 128 caracteres cuando se permiten frases largas o generadas. Más allá de 64 no aporta
+             nada, porque el cuello de botella es la longitud, no el alfabeto.</li>
+          <li><strong>Blocklist antes que composición.</strong> Rechazar contraseñas que estén en una
+              lista de contraseñas filtradas, en listas de contraseñas comunes o que coincidan con el
+              identificador de la cuenta, el nombre de la organización o datos personales. Esta es la regla
+              que de verdad mata a <code>P4$$w0rd!2024</code>.</li>
+          <li><strong>Sin reglas de composición por defecto.</strong> Obligar mayúscula, símbolo y dígito
+              empuja a la gente hacia <code>Password1!</code>, que es peor, no mejor. Si se piden, al menos
+              que la regla sea máxima y sin caducidad, sin exigir cambios periódicos.</li>
+          <li><strong>Comparación en tiempo constante</strong> y límite de intentos para frenar la fuerza
+              bruta en línea.</li>
+          <li><strong>Almacenamiento:</strong> salted hash con función de derivación de clave (Argon2id,
+              scrypt, bcrypt o PBKDF2) y factor de coste alto. SHA-256 sin sal, que es lo que asume el
+              escenario de ataque de esta política, es justo lo que hay que evitar al almacenamiento.</li>
+          <li><strong>Sin rotación obligatoria por antigüedad.</strong> Cambiar la contraseña cada 90
+              días produce contraseñas peores; se cambia por indicación de una filtración.</li>
+        </ul>
+        <p>
+          En resumen: la política de UPSIN de este proyecto conserva las cinco reglas clásicas porque la
+          materia las pide, pero las coloca <strong>por debajo</strong> de la estimación de entropía y del
+          contraste con el corpus. Ese es el cambio de fondo que acerca la práctica clásica a la
+          recomendación moderna.
+        </p>
+      </div>
+    </details>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <p>
+    PassGuard Lab &middot; Universidad de Sincelejo, sede UPSIN &middot; Seguridad de la Información 2026-C1.
+  </p>
+  <p>
+    Código fuente:
+    <a class="link" href="https://github.com/Julpach65/passguard-lab" rel="noopener noreferrer" target="_blank">
+      Julpach65/passguard-lab
+    </a>
+    &middot; Frontend sin dependencias, sin build y sin frameworks.
+  </p>
+</footer>
+
+<script src="config.js"></script>
+<script src="app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+dist/
+*.egg-info/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Secretos. El archivo .env real nunca se versiona; .env.example si.
+.env
+*.pem
+*.key
+
+# Herramientas
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

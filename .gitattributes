@@ -1,0 +1,19 @@
+# El proyecto se desarrolla en Windows y se despliega en Linux. Sin esto, git
+# convierte LF a CRLF al guardar y los diffs ensucian ficheros enteros.
+#
+# eol=lf mantiene LF tanto en el repo como en la copia de trabajo, que es lo que
+# tolerate Python, Flask, Node y GitHub Pages sin configuración extra.
+* text=auto eol=lf
+
+# El corpus es un fichero de datos una sola entrada por línea: LF es
+# obligatorio o el analizador leería un salto de línea pegado a cada
+# contraseña y ninguna coincidiría con el diccionario.
+data/corpus.txt text eol=lf
+
+# Binarios, por si algún día se añade alguno.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

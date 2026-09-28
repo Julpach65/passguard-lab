@@ -1,0 +1,232 @@
+# PassGuard Lab
+
+Laboratorio de análisis de contraseñas para la asignatura de Seguridad de la
+Información (UPSIN, Universidad de Sincelejo). Estima la entropía de una
+contraseña, la contrasta contra un diccionario de contraseñas comunes, la
+evalúa contra una política institucional explícita y genera contraseñas que la
+cumplen.
+
+La tesis del proyecto, y la razón de que exista una mitad servidor: **cumplir
+las reglas de composición no demuestra que una contraseña sea segura.** Una
+contraseña puede pasar mayúscula, minúscula, número, símbolo y longitud, y aun
+así tener un espacio de búsqueda de 32 combinaciones. Por eso el veredicto
+depende de una estimación de entropía y de un contraste contra un corpus, no
+solo de cinco casillas.
+
+## Arquitectura
+
+Dos piezas en Review deployments distintos, porque cada una tiene una
+restricción propia:
+
+| Pieza | Dónde | Por qué |
+| --- | --- | --- |
+| Frontend | GitHub Pages | HTML, CSS y JavaScript sin dependencias ni build. Es estático y gratuito. |
+| API | PythonAnywhere (Free) | El veredicto se calcula en Python, en el servidor. |
+
+El frontend es una **caché con pretensiones, no la autoridad**. Hace un
+preanálisis instantáneo para que la interfaz responda al instante, y cuando
+llega la respuesta del servidor la sustituye. Si el servidor está caído, lo dice
+explícitamente en pantalla en vez de fingir que el análisis local es el
+veredicto. El cliente puede mentir sobre la política; el servidor no.
+
+```
+static/                 GitHub Pages
+  index.html
+  styles.css
+  app.js                preanálisis local + llamada a la API
+  sha1.worker.js        SHA-1 en Web Worker para HIBP
+  config.js             única línea a editar tras el despliegue
+
+app.py, analyzer.py…    PythonAnywhere
+```
+
+## Puesta en marcha local
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate          # en Windows
+pip install -r requirements.txt
+
+python scripts/build_corpus.py # genera data/corpus.txt
+python app.py                  # http://127.0.0.1:5000
+```
+
+El corpus se construye con `scripts/build_corpus.py`, que es determinista: la
+misma semilla produce siempre el mismo fichero. Aun así se versiona (36 KB, 3.755
+entradas) para que clonar y ejecutar `pytest` funcione sin ningún paso extra. Los
+tests lo regeneran solos si falta.
+
+En desarrollo, `static/config.js` deja `apiBase` vacío y eso hace que las
+peticiones vayan al mismo origen que sirve la página. Para probar la
+arquitectura dividida tal como queda en producción:
+
+```bash
+python -m http.server 8000 --directory static
+```
+
+y poner en `static/config.js`:
+
+```javascript
+apiBase: 'http://127.0.0.1:5000'
+```
+
+`http://localhost:8000` y `http://127.0.0.1:8000` ya están en la lista blanca por
+defecto, así que el CORS funciona sin configurar nada.
+
+## Pruebas
+
+```bash
+pytest -q
+```
+
+92 pruebas repartidas en cuatro ficheros, y cada una falla por un motivo
+distinto:
+
+| Fichero | Qué fija |
+| --- | --- |
+| `tests/test_analyzer.py` | La aritmética de entropía, el diccionario, l33t, teclado, repeticiones, fechas y contexto. |
+| `tests/test_api.py` | Validación de entrada, códigos de error, límites, CORS, cabeceras y el guard de origen. |
+| `tests/test_no_log_leak.py` | Que la contraseña no llegue al log ni en un error 500 con traceback. |
+| `tests/test_frontend_contract.py` | Que `app.js` y la API no se desincronicen: endpoints, cabeceras, campos de respuesta y espejo de política. |
+
+El último es el que más vale: el navegador puede editar cualquier constante, así
+que un campo renombrado en `analyzer.py` sin tocar `app.js` se rompe en
+producción y no se ve en ningún otro sitio. El test lo detecta comparando el
+código de `app.js` con las respuestas reales de la API.
+
+## API
+
+Todas las respuestas de error tienen la misma forma, para que el cliente pueda
+ramificar sin parsear texto:
+
+```json
+{"error": {"code": "origin_not_allowed", "message": "Este origen no está autorizado para usar la API."}}
+```
+
+| Método | Ruta | Entrada | Qué hace |
+| --- | --- | --- | --- |
+| `GET` | `/api/health` | — | Estado, versión e identificador de política. |
+| `GET` | `/api/policy` | — | La política completa que la interfaz usa para construir sus reglas. |
+| `POST` | `/api/analyze` | `password`, `context?` | Análisis completo: entropía, veredicto, hallazgos, tiempo de ruptura. |
+| `POST` | `/api/generate` | `length?`, `alphabet?`, `groups?`, `min_classes?`, `avoid_ambiguous?` | Genera una contraseña y la analiza. |
+| `POST` | `/api/audit` | `password` | Recibo firmado del análisis y línea de auditoría sin el secreto. |
+| `POST` | `/api/hibp` | `prefix` | Consulta de brechas por k-anonimato, con solo 5 hex de SHA-1. |
+
+Las peticiones entre orígenes llevan la cabecera `X-Passguard-Client: 1`, que
+dispara un preflight y por tanto impide que un `fetch` en modo *no-cors* o un
+formulario HTML disparen un `POST` desde otra web.
+
+## La política
+
+`policy.py` es el **único** sitio donde vive la política. La interfaz no la
+reescribe: la descarga. Eso elimina la divergencia entre servidor y cliente, que
+en la versión anterior de este proyecto tenía el umbral de 12 caracteres
+escrito en cuatro sitios distintos.
+
+- `upsin-seg-2026-c1`, versión `1.0.0`.
+- Longitud de 12 a 128.
+- Entropía estimada mínima de 40 bits.
+- Escala ordinal de 0 a 4 con etiquetas accionables, con los umbrales derivados
+  de los rangos de Log10(guesses) del Apéndice A de NIST SP 800-63B.
+- Ataque supuesto: 10<sup>10</sup> intentos por segundo, SHA-256 sin sal, modo
+  offline. Es deliberadamente pesimista: asume recursos dedicados.
+
+Hay 11 reglas. Las cinco de composición se mantienen porque la materia las pide,
+pero quedan **por debajo** de la entropía y del contraste con el corpus: en la
+versión anterior cumplirlas bastaba, y eso aprobaba `aA1!aA1!aA1!aA1!`.
+
+El modelo de ataque importa más que la fórmula. `P4$$w0rd!2024` cumple las cinco
+reglas y no está en ningún diccionario de passwords filtrados, pero un atacante
+razonador lo genera en milisegundos con la lógica "palabra en español + año en
+curso + dos sustituciones". El corpus de este proyecto está construido para que
+ese caso se detecte, y por eso la política penaliza los patrones, no solo las
+clases de caracteres.
+
+## Modelo de amenazas
+
+Lo que esta aplicación **sí** hace:
+
+- **No guarda la contraseña en ningún sitio.** Ni en el log, ni en la base de
+  datos, ni en un fichero. La auditoría registra
+  `HMAC-SHA256(clave_de_32_bytes, contraseña)`, con una clave que se genera al
+  arrancar el proceso y se pierde al reiniciar. Detectar reutilización no obliga
+  a guardar el secreto, que es justamente lo que había que evitar.
+- **No filtra el secreto en los logs, ni por accidente.** Una excepción
+  inesperada imprime su traza, y la traza incluye el mensaje de la excepción: si
+  ese mensaje interpola la contraseña, el secreto quedaba escrito en el log. Aquí
+  el traza se formatea a mano, se redacta y se registra como un mensaje normal.
+  `tests/test_no_log_leak.py` lo comprueba de verdad, capturando el flujo real.
+- **No acepta orígenes ajenos.** El `Origin` se valida en el servidor, no solo
+  en la respuesta: CORS protege la lectura de la respuesta, no la ejecución de
+  la petición. Un `Origin` fuera de la lista es un 403, y una escritura entre
+  orígenes además tiene que declarar `X-Passguard-Client`.
+- **No expone el debugger.** `PASSGUARD_DEBUG` sale del entorno y el host por
+  defecto es `127.0.0.1`.
+- **No acepta cuerpos sin límite.** 8 KiB, y un cuerpo mayor es un 413.
+- **No se cuelga con entradas absurdas.** El generador tiene techo de reintentos
+  y recorta la longitud al rango válido. El `while True` original pedía 12
+  caracteres que él mismo no producía cuando le pedían 5, y cuatro peticiones
+  bastaban para dejar el hilo al 100 % de CPU para siempre.
+- **No devuelve trazas al cliente.** Ningún error sale como HTML; todos son JSON
+  con un código estable.
+
+Lo que **no** hace, y conviene decir en voz alta:
+
+- **No es autenticación.** `X-Passguard-Client` no es un token: es una constante
+  pública. Detecta ataques desde navegadores, no scripts. Quien tenga la URL
+  puede llamar a la API con curl, y por eso está el límite de peticiones.
+- **La contraseña viaja al servidor** durante el análisis, y eso es un compromiso
+  real: está expuesta en tránsito, en la memoria del proceso y en sus registros.
+  En un sistema de producción, el orden de preferencia sería no mandar la
+  contraseña, mandar solo el resultado ya calculado, y solo entonces todo lo
+  demás. Aquí es inevitable: el corpus de 3.755 contraseñas comunes y la
+  estimación de tiempo de ruptura no se pueden hacer bien en el navegador.
+- **El limitador de peticiones vive en memoria.** Con varias instancias o tras un
+  reinicio, el contador vuelve a cero. En un despliegue real haría falta Redis.
+- **El corpus es pequeño.** 3.755 contraseñas, suficiente para la asignatura y
+  lejos de ser un corpus de calidad forense.
+
+## Despliegue
+
+### Frontend: GitHub Pages
+
+`.github/workflows/pages.yml` publica el contenido de `static/` en la raíz del
+sitio, de modo que `app.js` y `config.js` quedan en la raíz y no bajo un
+subdirectorio.
+
+En `static/config.js` hay una única línea que hay que cambiar tras el primer
+despliegue:
+
+```javascript
+apiBase: 'https://<cuenta>.pythonanywhere.com'
+```
+
+### API: PythonAnywhere
+
+En el panel, en la web app:
+
+1. **Source code**: subir el repositorio y fijar el directorio a la raíz.
+2. **WSGI configuration file**: `from wsgi import app`.
+3. **Environment variables**:
+
+   ```
+   PASSGUARD_ALLOWED_ORIGINS=https://julpach65.github.io
+   PASSGUARD_CORPUS_PATH=/home/<cuenta>/passguard-lab/data/corpus.txt
+   ```
+
+4. Recargar la web app.
+
+`PASSGUARD_DEBUG` no se define: su ausencia ya significa desactivado, y ese es
+el valor por defecto a propósito. No hay ninguna variable para la clave de
+auditoría porque no debe existir: se genera sola en memoria en cada arranque.
+
+Dos cosas del plan gratuito que conviene tener presentes: **la web app caduca
+cada mes y hay que renovarla a mano**, y la salida a Internet está restringida a
+una lista blanca, así que la consulta a HIBP probablemente no funcione. Esa ruta
+degrada a `{"available": false}` con un 200 en lugar de romper la interfaz, por
+ser un servicio opcional.
+
+## Licencia y autoría
+
+Proyecto de autoría propia, escrito para esta asignatura. No reutiliza código de
+ningún otro analizador de contraseñas.

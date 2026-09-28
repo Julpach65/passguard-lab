@@ -1,0 +1,48 @@
+name: Desplegar frontend en GitHub Pages
+
+# Solo el frontend. La API vive en PythonAnywhere porque el profesor exige un
+# backend en Python y el plan gratuito no permite desplegarlo aquí: GitHub
+# Pages sirve archivos estáticos y nada más.
+#
+# Se despliega el contenido de static/ en la raíz del sitio, no el repositorio
+# entero, para que app.js y config.js queden en /app.js y /config.js, que es la
+# ruta que espera index.html.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "static/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Un único grupo de concurrencia: GitHub Pages admite una publicación a la vez,
+# y sin esto la segunda cancela a la primera con un error confuso. No se cancela
+# la que ya está en curso, porque dejar el sitio a medio publicar es peor que
+# esperar.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  desplegar:
+    environment:
+      name: github-pages
+      url: ${{ steps.publicar.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: static
+
+      - id: publicar
+        uses: actions/deploy-pages@v4
