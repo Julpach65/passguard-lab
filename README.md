@@ -23,18 +23,23 @@ restricción propia:
 | Frontend | GitHub Pages | HTML, CSS y JavaScript sin dependencias ni build. Es estático y gratuito. |
 | API | PythonAnywhere (Free) | El veredicto se calcula en Python, en el servidor. |
 
-El frontend es una **caché con pretensiones, no la autoridad**. Hace un
-preanálisis instantáneo para que la interfaz responda al instante, y cuando
-llega la respuesta del servidor la sustituye. Si el servidor está caído, lo dice
-explícitamente en pantalla en vez de fingir que el análisis local es el
-veredicto. El cliente puede mentir sobre la política; el servidor no.
+El frontend es una **pintura, no la autoridad**. No lleva su propio veredicto:
+manda la contraseña, espera al servidor y pinta lo que llega. Si el servidor no
+responde, cambia a un análisis local reducido y **lo dice en pantalla**, porque
+sin servidor no se puede consultar el diccionario de contraseñas comunes y un
+veredicto local sin avisar sería una mentira. El cliente puede mentir sobre la
+política; el servidor no.
+
+La web tiene dos tarjetas y nada más: un probador y un generador. Todo lo demás
+—auditoría, verificación de brechas, métricas de tiempo de ruptura— existe como
+endpoint de la API, pero no tiene botón. Veredicto, nivel, bits y el motivo por
+el que falla, en una línea.
 
 ```
 static/                 GitHub Pages
-  index.html
+  index.html            probador + generador
   styles.css
-  app.js                preanálisis local + llamada a la API
-  sha1.worker.js        SHA-1 en Web Worker para HIBP
+  app.js                análisis local de respaldo + llamada a la API
   config.js             única línea a editar tras el despliegue
 
 app.py, analyzer.py…    PythonAnywhere
@@ -56,9 +61,11 @@ misma semilla produce siempre el mismo fichero. Aun así se versiona (36 KB, 3.7
 entradas) para que clonar y ejecutar `pytest` funcione sin ningún paso extra. Los
 tests lo regeneran solos si falta.
 
-En desarrollo, `static/config.js` deja `apiBase` vacío y eso hace que las
-peticiones vayan al mismo origen que sirve la página. Para probar la
-arquitectura dividida tal como queda en producción:
+Con `apiBase` vacío la página arranca en **modo local**: no consulta a nadie y
+calcula una estimación en el navegador, avisa de ello y deja la lista de reglas
+marcada como provisional. Para probar la arquitectura dividida tal como queda en
+producción —frontend en un puerto, API en otro— hay que rellenar `apiBase` en
+`static/config.js`:
 
 ```bash
 python -m http.server 8000 --directory static
@@ -79,7 +86,7 @@ defecto, así que el CORS funciona sin configurar nada.
 pytest -q
 ```
 
-92 pruebas repartidas en cuatro ficheros, y cada una falla por un motivo
+97 pruebas repartidas en cuatro ficheros, y cada una falla por un motivo
 distinto:
 
 | Fichero | Qué fija |
@@ -87,12 +94,30 @@ distinto:
 | `tests/test_analyzer.py` | La aritmética de entropía, el diccionario, l33t, teclado, repeticiones, fechas y contexto. |
 | `tests/test_api.py` | Validación de entrada, códigos de error, límites, CORS, cabeceras y el guard de origen. |
 | `tests/test_no_log_leak.py` | Que la contraseña no llegue al log ni en un error 500 con traceback. |
-| `tests/test_frontend_contract.py` | Que `app.js` y la API no se desincronicen: endpoints, cabeceras, campos de respuesta y espejo de política. |
+| `tests/test_frontend_contract.py` | Que `app.js`, `index.html` y la API no se desincronicen. |
 
-El último es el que más vale: el navegador puede editar cualquier constante, así
-que un campo renombrado en `analyzer.py` sin tocar `app.js` se rompe en
-producción y no se ve en ningún otro sitio. El test lo detecta comparando el
-código de `app.js` con las respuestas reales de la API.
+El último es el que más vale, porque el navegador puede editar cualquier
+constante: un campo renombrado en `analyzer.py` sin tocar `app.js` se rompe en
+producción y no se ve en ningún otro sitio. Fijado sobre el código real de
+`static/`, leído del disco:
+
+- Los endpoints que llama el cliente existen en Flask.
+- Los `id` que `app.js` busca existen en `index.html`, y `aria-*` y `for` no
+  apuntan a nada. Un `getElementById` que devuelve `null` no lanza ningún error:
+  la tarjeta desaparece y la página parece seguir funcionando.
+- `index.html` no carga ningún fichero inexistente.
+- Los campos que el cliente lee de cada respuesta están en la respuesta, y los
+  que manda son los que la API acepta. Esta última dirección es la que faltaba:
+  los tests del servidor mandaban sus propios payloads, así que una clave mal
+  escrita en `app.js` se rompía en el navegador y en ningún test.
+- El cliente no manda ningún veredicto ya calculado, y el espejo de política
+  (reglas, escala y reglas críticas) coincide con `policy.py`.
+
+Ese espejo merece una frase aparte, porque es una duplicación que se acepta a
+propósito. Sin servidor la página no puede consultar el corpus de 3.755
+contraseñas, y un espejo desalineado aprobaría en local lo que el servidor
+rechaza. Los tests comparan sus 11 reglas y sus reglas críticas una a una con
+`policy.py`, así que la divergencia salta en la suite y no en una demostración.
 
 ## API
 
@@ -109,8 +134,13 @@ ramificar sin parsear texto:
 | `GET` | `/api/policy` | — | La política completa que la interfaz usa para construir sus reglas. |
 | `POST` | `/api/analyze` | `password`, `context?` | Análisis completo: entropía, veredicto, hallazgos, tiempo de ruptura. |
 | `POST` | `/api/generate` | `length?`, `alphabet?`, `groups?`, `min_classes?`, `avoid_ambiguous?` | Genera una contraseña y la analiza. |
-| `POST` | `/api/audit` | `password` | Recibo firmado del análisis y línea de auditoría sin el secreto. |
-| `POST` | `/api/hibp` | `prefix` | Consulta de brechas por k-anonimato, con solo 5 hex de SHA-1. |
+| `POST` | `/api/audit` | `password` | Recibo firmado del análisis y línea de auditoría sin el secreto. Sin botón en la web. |
+| `POST` | `/api/hibp` | `prefix` | Consulta de brechas por k-anonimato, con solo 5 hex de SHA-1. Sin botón en la web. |
+
+Las dos últimas rutas se documentan porque son parte de la API, pero la interfaz
+no las llama: hacen falta pasos que no aportan a una contraseña buena y
+obligarían a enviar la contraseña o su hash fuera de la aplicación. El cálculo
+del SHA-1 era además la razón del `sha1.worker.js`, que ya no existe.
 
 Las peticiones entre orígenes llevan la cabecera `X-Passguard-Client: 1`, que
 dispara un preflight y por tanto impide que un `fetch` en modo *no-cors* o un
@@ -275,6 +305,29 @@ funcionar a mitad de semestre; y la salida a Internet puede estar limitada segú
 el plan y el destino, así que la consulta a HIBP puede no llegar. Esa ruta
 degrada a `{"available": false}` con un 200 en lugar de romper la interfaz, por
 ser un servicio opcional.
+
+## Checklist de entrega
+
+Lo que hay que comprobar, en orden. Los cuatro primeros puntos son el despliegue;
+los dos últimos son la prueba de que el despliegue sirve de algo.
+
+- [ ] `pytest -q` en verde sobre el repositorio recién clonado.
+- [ ] API en PythonAnywhere con el código en `/home/Julpach65/passguard-lab` y el
+      WSGI exportando `application`.
+- [ ] Variable `PASSGUARD_ALLOWED_ORIGINS=https://julpach65.github.io` en *Web →
+      Edit → Environment variables*, y **Reload** después de añadirla. Sin ella
+      el navegador bloquea la respuesta y la web cae en modo local.
+- [ ] `apiBase` en `static/config.js` apuntando a
+      `https://julpach65.pythonanywhere.com`, y push para que Pages lo sirva.
+- [ ] La web app no caduca: en el plan gratuito hay que renovarla a mano. La de
+      esta entrega caduca el **28 de octubre de 2026**.
+- [ ] `curl` a `/api/health` y a `/api/analyze` con `Origin` y
+      `X-Passguard-Client` devolviendo 200 (abajo).
+- [ ] Comprobación manual en el navegador, que la suite no puede hacer: con la
+      web abierta, escribir una contraseña y ver que la lista de requisitos se
+      pinta; y con la API caída, que la página **avise** y no dé nota. Que la
+      misma contraseña rejected por el servidor no salga aprobada en local es el
+      punto entero del diseño.
 
 ## Licencia y autoría
 

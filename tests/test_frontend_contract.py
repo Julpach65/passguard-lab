@@ -37,10 +37,6 @@ RULE_LITERAL = re.compile(
     r"\{\s*id:\s*'([^']+)',\s*label:\s*'([^']*)',\s*"
     r"kind:\s*'([^']+)',\s*value:\s*([^,}]+?)\s*\}"
 )
-SCORE_LITERAL = re.compile(
-    r"\{\s*level:\s*(\d+),\s*min_bits:\s*([\d.]+),\s*"
-    r"label:\s*'([^']*)',\s*color:\s*'(#[0-9A-Fa-f]{6})'\s*\}"
-)
 
 
 def _strip_comments(source: str) -> str:
@@ -73,13 +69,6 @@ def _client_rules(app_js: str) -> list[dict[str, object]]:
             {"id": rule_id, "label": label, "kind": kind, "value": parsed}
         )
     return rules
-
-
-def _client_scores(app_js: str) -> list[dict[str, object]]:
-    return [
-        {"level": int(level), "min_bits": min_bits, "label": label, "color": color}
-        for level, min_bits, label, color in SCORE_LITERAL.findall(_mirror_block(app_js))
-    ]
 
 
 def _assert_same_value(client_value: object, server_value: object, rule_id: str) -> None:
@@ -128,12 +117,56 @@ def test_client_reads_api_base_from_config(app_js):
 
 
 def test_config_js_declares_the_knobs():
+    """config.js solo expone lo que la interfaz usa hoy: la URL del backend.
+
+    Se quitó `hibpEnabled` cuando la verificación de brechas dejó de tener
+    botón. Dejar el interruptor puesto invitaba a tocarlo esperando un efecto
+    que ya no existe.
+    """
     source = CONFIG_JS.read_text(encoding="utf-8")
     assert "PASSGUARD_CONFIG" in source
     assert "apiBase" in source
-    # El typo `hibrEnabled` es historical; el cliente lo acepta, pero el
-    # comentario del archivo debe seguir documentando la opción.
-    assert "hibrEnabled" in source or "hibpEnabled" in source
+    assert "hibpEnabled" not in source and "hibrEnabled" not in source
+
+
+def test_every_element_the_client_looks_up_exists_in_the_html(app_js):
+    """Cada `id` que app.js busca tiene que existir en index.html.
+
+    El fallo es silencioso: `document.getElementById` devuelve `null`, y los
+    manejadores escriben sobre `null` sin que salte nada. Una tarjeta renombrada
+    en el HTML deja de pintar el veredicto y la página parece que funciona.
+    """
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    declared = set(re.findall(r'id="([^"]+)"', html))
+
+    block = re.search(r"const E = \{\};(.*?)\]\.forEach", app_js, re.DOTALL)
+    assert block, "no se encontró el mapa de elementos de app.js"
+    wanted = set(re.findall(r"'([a-z][a-z0-9-]*)'", block.group(1)))
+    wanted.update(re.findall(r"getElementById\('([^']+)'\)", app_js))
+
+    assert wanted, "app.js no declara ningún elemento"
+    assert not wanted - declared, (
+        f"app.js busca ids que no están en index.html: {sorted(wanted - declared)}"
+    )
+
+
+def test_index_html_only_points_at_files_that_exist():
+    """Nada de referencias rotas: un `src` inexistente es un 404 silencioso."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    refs = re.findall(r'(?:src|href)="([^"#:]+)"', html)
+    assert refs, "index.html no carga ningún recurso local"
+    for ref in refs:
+        assert (STATIC / ref).exists(), f"index.html carga {ref} y no existe"
+
+
+def test_every_aria_reference_points_at_something():
+    """`for` y `aria-labelledby` tienen que apuntar a un id real."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    declared = set(re.findall(r'id="([^"]+)"', html))
+    referenced = re.findall(r'(?:aria-labelledby|aria-describedby)="([^"]+)"', html)
+    referenced += re.findall(r'<label[^>]*\sfor="([^"]+)"', html)
+    for target in referenced:
+        assert target in declared, f"aria apunta a {target!r}, que no existe"
 
 
 # --- Los campos que el cliente consume existen en la respuesta --------------
@@ -144,11 +177,13 @@ def test_analyze_response_has_every_field_the_client_reads(client, app_js):
     assert response.status_code == 200
     body = response.get_json()
 
-    # Subconjunto que la interfaz lee del resultado del análisis.
+    # Subconjunto que la interfaz lee del resultado del análisis. La respuesta
+    # trae más cosas (`guesses_log10`, `crack_time`, `explanation`…), que son
+    # para consumo de la API y se cubren en test_api.py; aquí solo importa lo
+    # que la página pinta de verdad.
     consumed = {
-        "password_length", "entropy_bits", "checks", "score", "score_color",
-        "score_label", "charset_size", "guesses_log10", "crack_time", "valid",
-        "source", "findings", "explanation",
+        "valid", "rules", "missing", "findings", "checks",
+        "score", "score_label", "score_color", "entropy_bits",
     }
     missing = consumed - set(body)
     assert not missing, f"app.js lee campos que /api/analyze no devuelve: {sorted(missing)}"
@@ -158,24 +193,34 @@ def test_analyze_response_has_every_field_the_client_reads(client, app_js):
     for key in consumed:
         assert body[key] is not None, f"{key} llegó nulo y la interfaz lo usa directamente"
 
+    # La lista de requisitos se pinta desde `rules`, no desde `checks` suelto:
+    # si `rules` no trae `ok`, cada punto saldría marcado como incumplido.
+    for rule in body["rules"]:
+        assert isinstance(rule["ok"], bool), f"la regla {rule['id']!r} no trae `ok`"
 
-def test_analyze_findings_have_the_fields_the_client_renders(client):
+
+def test_analyze_findings_have_the_fields_the_client_renders(client, app_js):
     body = client.post("/api/analyze", json={"password": "qwertyuiop123"}).get_json()
     assert body["findings"], "el caso de prueba debe producir hallazgos"
     for finding in body["findings"]:
-        # app.js pinta `label`, `detail`, `severity` y coloca `masked`.
-        assert finding.get("label"), "cada hallazgo necesita una etiqueta legible"
-        assert finding.get("severity") in {"critical", "high", "medium", "low"}
-        assert "detail" in finding
+        # La página usa un solo campo: `label`, el del hallazgo más grave, que
+        # es lo que aparece en la línea de motivo. Si `label` llega vacío o
+        # viene nulo, el veredicto se queda mudo sin que salte ningún error.
+        assert str(finding.get("label") or "").strip(), (
+            f"el hallazgo {finding!r} necesita una etiqueta legible"
+        )
 
 
-def test_crack_time_has_the_subfields_the_client_formats(client, app_js):
+def test_crack_time_stays_well_formed_for_api_consumers(client):
+    """`crack_time` ya no se pinta en la web, pero sigue siendo parte de la API.
+
+    Se valida aquí para que quitarlo de la interfaz no acabe dejándolo a medio
+    construir: si algún día vuelve a la pantalla, el dato tiene que venir entero.
+    """
     body = client.post("/api/analyze", json={"password": "abcabc12345"}).get_json()
     crack = body["crack_time"]
-    # app.js lee crack_time.human y crack_time.attempts_per_second.
     assert isinstance(crack["human"], str) and crack["human"]
     assert crack["attempts_per_second"] > 0
-    assert "crack_time" in app_js
 
 
 def test_policy_response_matches_what_the_client_renders(client, app_js):
@@ -195,13 +240,41 @@ def test_generate_response_has_every_field_the_client_reads(client):
     body = client.post(
         "/api/generate", json={"length": 20, "alphabet": "web"}
     ).get_json()
-    consumed = {
-        "password", "length", "alphabet", "alphabet_size", "entropy_bits",
-        "classes_present", "policy_satisfied", "analysis",
-    }
-    missing = consumed - set(body)
-    assert not missing, f"app.js lee campos que /api/generate no devuelve: {sorted(missing)}"
-    assert body["analysis"]["policy_id"] == policy.POLICY_ID
+    # La página solo lee la contraseña; el resto de la respuesta es para la API
+    # y se valida en test_api.py.
+    assert body["password"], "el generador devolvió una contraseña vacía"
+    assert len(body["password"]) == body["length"]
+
+
+def test_request_payloads_from_the_client_are_valid(client, app_js):
+    """Lo que el navegador manda tiene que existir, y no solo lo que devuelve.
+
+    Esta es la dirección que faltaba comprobar. Los tests del servidor mandaban
+    sus propios payloads, así que una clave mal escrita en app.js — o una opción
+    que el endpoint no acepta — no fallaba en ningún sitio: se rompía en el
+    navegador, en silencio. Los literales se leen del disco, sin ejecutar JS.
+    """
+    code = _strip_comments(app_js)
+    payloads = re.findall(r"body:\s*\{([^}]*)\}", code)
+    assert payloads, "no se encontró el body de ninguna petición en app.js"
+
+    sent = set()
+    for payload in payloads:
+        sent.update(re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*:", payload))
+    allowed = {"password", "context", "length", "alphabet", "avoid_ambiguous", "min_classes"}
+    assert sent <= allowed, (
+        f"app.js manda campos que la API no documenta: {sorted(sent - allowed)}"
+    )
+
+    # Y el payload exacto del generador, el que está en línea en app.js.
+    app_module.limiter.reset()
+    response = client.post(
+        "/api/generate",
+        json={"length": 20, "alphabet": "web", "avoid_ambiguous": True, "min_classes": 4},
+    )
+    assert response.status_code == 200, (
+        f"el payload del generador es rechazado: {response.get_json()}"
+    )
 
 
 def test_health_response_shape(client):
@@ -211,61 +284,48 @@ def test_health_response_shape(client):
     assert "service" in body
 
 
-def test_audit_response_has_the_receipt_the_client_shows(client):
+def test_audit_response_keeps_its_receipt_for_api_consumers(client):
+    """La auditoría perdió su botón, pero el endpoint sigue siendo API pública.
+
+    Se conserva el test para que quitar la interfaz no deje el endpoint a medio
+    construir: el recibo es lo que permite a un tercero confirmar más tarde que
+    una contraseña se dejó de usar.
+    """
     body = client.post(
         "/api/audit", json={"password": "Auditable#2026"}
     ).get_json()
-    assert "receipt" in body
-    assert "audit_id" in body
+    assert body["receipt"], "el recibo del servidor no puede llegar vacío"
+    assert body["audit_id"]
 
 
-def test_client_sends_the_password_the_server_actually_expects(app_js):
-    """Lo que el navegador manda a /api/audit tiene que ser lo que el servidor lee.
+def test_client_never_sends_its_own_verdict(app_js):
+    """El veredicto es del servidor: el cliente pregunta, no responde.
 
-    Este fallo existió: app.js calculaba un HMAC en el cliente y lo enviaba como
-    `pw_hmac` junto a un score propio, mientras que /api/audit recalcula el
-    análisis desde `password` e ignora todo lo demás. Con red, la auditoría
-    respondía 400 "Falta 'password'". Los tests del servidor pasaban porque
-    ellos sí mandaban `password`: el contrato comprobaba al servidor, nunca lo
+    Aquí hubo un bug real. app.js calculaba un HMAC en el navegador y lo
+    mandaba como `pw_hmac` junto a un score propio, mientras que /api/audit
+    recalcula el análisis desde `password` e ignora todo lo demás. En el
+    navegador la auditoría respondía 400 "Falta 'password'". Los tests pasaban
+    porque ellos sí mandaban `password`: se comprobaba al servidor y nunca lo
     que el navegador envía.
+
+    Ese test murió con la interfaz de auditoría, así que la lección se fija aquí
+    en forma general: ninguna petición sale con un veredicto ya calculado.
     """
     code = _strip_comments(app_js)
-    audit_call = re.search(
-        r"api\.audit\(\{(?P<body>.*?)\}\)", code, re.DOTALL
-    )
-    assert audit_call, (
-        "no se encuentra una llamada api.audit({ ... }) con el payload en línea. "
-        "Se exige el literal en línea a propósito: si el payload se construye en "
-        "una variable aparte, este test no puede leerlo y el contrato volvería a "
-        "quedar sin comprobar, que es justo como pasó con este bug."
-    )
-    payload = audit_call.group("body")
 
-    # El servidor exige 'password': es el único campo que hace falta.
-    assert re.search(r"\bpassword\s*:", payload), (
-        f"api.audit() no envía 'password'; el servidor responde 400. Payload: {payload.strip()}"
-    )
-
-    # Y no debe mandar campos que el servidor ignora: enviar un score propio
-    # sugiere que el cliente participa en el veredicto, y no es así.
-    for dead in ("pw_hmac", "score", "guesses_log10", "findings", "policy_id"):
-        assert not re.search(rf"\b{dead}\s*:", payload), (
-            f"api.audit() envía {dead!r}, que /api/audit ignora: el veredicto es "
-            f"del servidor. Payload: {payload.strip()}"
-        )
-
-
-def test_client_never_computes_the_audit_hmac(app_js):
-    """La clave del HMAC vive en el servidor y no sale de él.
-
-    Un HMAC calculado en el navegador jamás podría compararse con el del
-    servidor, así que mantener ese código era mantener una illusion.
-    """
-    for dead in ("hmacOf", "pw_hmac", "SESSION_KEY", "subtle.sign"):
-        assert dead not in _strip_comments(app_js), (
+    for dead in ("hmacOf", "SESSION_KEY", "subtle.sign", "pw_hmac"):
+        assert dead not in code, (
             f"app.js todavía contiene {dead!r}: el HMAC de auditoría lo calcula "
             f"el servidor, no el cliente"
         )
+
+    # Y ningún request(...) lleva score, findings ni checks.
+    for payload in re.findall(r"body:\s*\{([^}]*)\}", code):
+        for dead in ("score", "findings", "checks", "entropy", "policy_id"):
+            assert not re.search(rf"\b{dead}\s*:", payload), (
+                f"app.js envía {dead!r} al servidor, lo que sugiere que el "
+                f"veredicto es del cliente. Payload: {payload.strip()}"
+            )
 
 
 def test_client_policy_mirror_matches_the_server(client, app_js):
@@ -293,18 +353,47 @@ def test_client_policy_mirror_matches_the_server(client, app_js):
         if server_rule.get("value") is not None:
             _assert_same_value(client_rule["value"], server_rule["value"], server_rule["id"])
 
+    # Las reglas que invalidan el veredicto también están duplicadas. Si el
+    # servidor empieza a exigir, por ejemplo, `not_common` y el cliente sigue
+    # sin contarla como crítica, el modo local aprobaría contraseñas que el
+    # servidor rechaza: exactamente el fallo que el espejo pretende evitar.
+    match = re.search(r"const CRITICAL = \[([^\]]*)\]", app_js)
+    assert match, "app.js no declara la lista de reglas críticas del espejo"
+    client_critical = set(re.findall(r"'([^']+)'", match.group(1)))
+    assert client_critical == set(policy.CRITICAL_RULE_IDS), (
+        f"las reglas críticas del cliente son {sorted(client_critical)} y las "
+        f"del servidor {sorted(policy.CRITICAL_RULE_IDS)}"
+    )
 
-def test_client_score_scale_matches_the_server(client, app_js):
-    """La escala 0-4 con sus umbrales y colores también está duplicada."""
-    body = client.get("/api/policy").get_json()
-    mirror = {entry["level"]: entry for entry in _client_scores(app_js)}
 
-    assert set(mirror) == {entry["level"] for entry in body["scores"]}
-    for server_entry in body["scores"]:
-        client_entry = mirror[server_entry["level"]]
-        assert client_entry["label"] == server_entry["label"]
-        assert float(client_entry["min_bits"]) == float(server_entry["min_bits"])
-        assert client_entry["color"].upper() == server_entry["color"].upper()
+def test_client_never_grades_the_password_itself(app_js):
+    """La nota la pone el servidor. El respaldo local no se la inventa.
+
+    El análisis local no puede calcular el espacio de búsqueda: el servidor se
+    queda con el mínimo entre fuerza bruta y el mejor ataque dirigido, y eso
+    necesita el corpus y todos los patrones. Si el respaldo puntuara con
+    longitud × log2(alfabeto), `aA1!aA1!aA1!aA1!` —16 caracteres, 4 clases y
+    repitiendo bloque— saldría "muy fuerte" en local mientras el servidor la
+    rechaza y la lista se pinta en rojo. Mostrar los bits y no la nota es más
+    feo, y es cierto. Este test fija esa decisión para que nadie la deshaga sin
+    darse cuenta de lo que rompe.
+    """
+    code = _strip_comments(app_js)
+
+    assert "scoreForBits" not in code, (
+        "app.js vuelve a puntuar localmente: el nivel solo puede salir del "
+        "servidor, que es quien puede calcular el espacio de búsqueda"
+    )
+    assert "estimación local" in code, (
+        "el veredicto local debe etiquetarse como estimación, no como nota"
+    )
+    # Y el espejo no arrastra la escala 0-4, que es lo único que permitiría
+    # notarla. Se busca `level:`, no `min_bits`: ese nombre es también el `kind`
+    # de la regla de entropía y no tiene nada que ver con la escala.
+    assert not re.search(r"\blevel:\s*\d", _mirror_block(app_js)), (
+        "el espejo incluye la escala 0-4 pero el cliente no la usa: "
+        "conviene que no exista, o vuelve a ser tentación notarla"
+    )
 
 
 def test_client_policy_mirror_has_the_right_limits(app_js):
