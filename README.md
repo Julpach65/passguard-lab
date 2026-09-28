@@ -86,7 +86,7 @@ defecto, así que el CORS funciona sin configurar nada.
 pytest -q
 ```
 
-98 pruebas repartidas en cuatro ficheros, y cada una falla por un motivo
+106 pruebas repartidas en cinco ficheros, y cada una falla por un motivo
 distinto:
 
 | Fichero | Qué fija |
@@ -95,6 +95,7 @@ distinto:
 | `tests/test_api.py` | Validación de entrada, códigos de error, límites, CORS, cabeceras y el guard de origen. |
 | `tests/test_no_log_leak.py` | Que la contraseña no llegue al log ni en un error 500 con traceback. |
 | `tests/test_frontend_contract.py` | Que `app.js`, `index.html` y la API no se desincronicen. |
+| `tests/test_versionado_assets.py` | Que el HTML que se publica lleva la versión dentro de las comillas y que el paso falla si deja de encajar. |
 
 El último es el que más vale, porque el navegador puede editar cualquier
 constante: un campo renombrado en `analyzer.py` sin tocar `app.js` se rompe en
