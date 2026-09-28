@@ -14,6 +14,14 @@
     const CLIENT_VALUE = '1';
     const TIMEOUT_MS = 8000;
     const DEBOUNCE_MS = 250;
+    // Longitud mínima de un bloque repetido para que cuente. Tiene que ser el
+    // mismo número que patterns.py:find_repeats(min_length=3), o el modo local
+    // y el servidor discreparían sobre la misma contraseña.
+    const REPEAT_MIN_LENGTH = 3;
+    // Tope del texto que se pasa a los detectores de patrones. El regex de
+    // repetición es de retroceso y con miles de caracteres se arrastra; a
+    // partir de aquí la política ya está fallando por longitud igual.
+    const PATTERN_WINDOW = 256;
 
     const E = {};
     [
@@ -28,6 +36,17 @@
     }
     function num(value) {
         return typeof value === 'number' && isFinite(value) ? value : 0;
+    }
+
+    // Lee el valor de un <input> como entero. `HTMLInputElement.value` siempre
+    // es texto, así que pasarlo por num() devolvía 0, el `|| 20` de al lado lo
+    // tapaba y toda contraseña salía de 20 caracteres mientras la etiqueta
+    // marcaba la longitud que habías pedido. Un cero silencioso es peor que un
+    // error: aquí se notaba porque la etiqueta y el resultado no cuadraban, pero
+    // en cualquier otro sitio no se habría visto.
+    function intField(node, fallback) {
+        const raw = node ? parseInt(node.value, 10) : NaN;
+        return Number.isFinite(raw) ? raw : fallback;
     }
     function round(value, places) {
         const factor = Math.pow(10, places || 0);
@@ -189,9 +208,13 @@
     }
 
     function hasRepeat(text) {
-        if (/(.)\1{1,}/.test(text)) return true;              // carácter repetido
-        if (/(.{2,})\1+/.test(text)) return true;             // bloque repetido
-        return false;
+        // Espejo de patterns.py:find_repeats, que exige que el bloque repetido
+        // mida 3 caracteres o más. Aquí se marcaba cualquier carácter repetido
+        // dos veces ("aa"), así que el modo local rechazaba contraseñas que el
+        // servidor acepta. Un cliente más estricto que el servidor es un
+        // cliente que miente, solo que al revés.
+        const match = text.match(/([\s\S]+?)\1+/);
+        return Boolean(match) && match[0].length >= REPEAT_MIN_LENGTH;
     }
 
     function hasDate(text) {
@@ -212,6 +235,9 @@
     // dónde salió el veredicto.
     function analyzeLocally(password) {
         const lower = password.toLowerCase();
+        // Los patrones se miran sobre un recorte, no sobre la contraseña entera.
+        const scan = password.slice(0, PATTERN_WINDOW);
+        const scanLower = lower.slice(0, PATTERN_WINDOW);
         const classes = {
             uppercase: /[A-Z]/.test(password),
             lowercase: /[a-z]/.test(password),
@@ -226,10 +252,10 @@
             number: classes.number,
             symbol: classes.symbol,
             not_common: COMMON.indexOf(lower) === -1 && COMMON.indexOf(del33tFold(lower)) === -1,
-            no_sequence: !hasSequence(lower),
-            no_keyboard: !hasKeyboard(password),
-            no_repeat: !hasRepeat(password),
-            no_date: !hasDate(password),
+            no_sequence: !hasSequence(scanLower),
+            no_keyboard: !hasKeyboard(scan),
+            no_repeat: !hasRepeat(scan),
+            no_date: !hasDate(scan),
             entropy: bits >= num(POLICY.data.min_entropy_bits)
         };
         const failed = CRITICAL.filter(function (id) { return !checks[id]; });
@@ -441,19 +467,43 @@
         sym: '!#$%&()*+,-./:;<=>?@^_'
     };
 
-    function generateLocal(length) {
-        const pool = CHARSETS.low + CHARSETS.up + CHARSETS.num + CHARSETS.sym;
-        const out = [];
-        for (let i = 0; i < length; i += 1) {
+    function randomFrom(pool) {
+        const bytes = new Uint32Array(1);
+        window.crypto.getRandomValues(bytes);
+        return pool[bytes[0] % pool.length];
+    }
+
+    function shuffle(chars) {
+        // Fisher-Yates con el mismo generador: barajar no es un adorno, es lo
+        // que evita que la contraseña sea legible por su orden.
+        for (let i = chars.length - 1; i > 0; i -= 1) {
             const bytes = new Uint32Array(1);
             window.crypto.getRandomValues(bytes);
-            out.push(pool[bytes[0] % pool.length]);
+            const j = bytes[0] % (i + 1);
+            const tmp = chars[i];
+            chars[i] = chars[j];
+            chars[j] = tmp;
         }
-        // Se garantiza una minúscula; el resto se completa al azar. Sin esto un
-        // número largo puede salir sin minúsculas y ser rechazada por la regla.
-        out[0] = CHARSETS.low[out[0].charCodeAt(0) % CHARSETS.low.length];
-        out[length - 1] = CHARSETS.sym[out[length - 1].charCodeAt(0) % CHARSETS.sym.length];
-        return out.join('');
+        return chars;
+    }
+
+    // Garantía por construcción, igual que generator.py: un carácter reservado
+    // por cada clase activa y el resto al azar. Antes solo se fijaban una
+    // minúscula y un símbolo, así que salía sin números una de cada pocas
+    // veces y el generador entregaba contraseñas que su propio comprobador
+    // rechazaba. Sin reintentos: exactamente `length` operaciones, igual que en
+    // el servidor.
+    function generateLocal(length) {
+        const groups = [CHARSETS.low, CHARSETS.up, CHARSETS.num, CHARSETS.sym];
+        const pool = groups.join('');
+        // Con menos de 4 caracteres no caben las cuatro clases. La interfaz no
+        // llega nunca aquí (el slider empieza en 12 y la política exige 12), pero
+        // si se fuerza, sale una contraseña de esa longitud en vez de romperse.
+        const out = length >= groups.length ? groups.map(randomFrom) : [];
+        for (let i = out.length; i < length; i += 1) {
+            out.push(randomFrom(pool));
+        }
+        return shuffle(out).join('');
     }
 
     function setGenStatus(text, state) {
@@ -463,16 +513,22 @@
         node.dataset.state = state || '';
     }
 
-    function renderGenerated(password, note) {
+    // `reported` es la longitud que declara la respuesta, no la que sale. Si no
+    // coinciden, se dice: antes el cliente pintaba su propia cuenta y la
+    // etiqueta del slider iba por otro lado, y las dos cosas parecian ciertas.
+    function renderGenerated(password, note, reported) {
         if (!E['gen-output']) return;
         E['gen-output'].value = password;
         const bits = round(password.length * Math.log2(CHARSETS.low.length + CHARSETS.up.length + CHARSETS.num.length + CHARSETS.sym.length), 1);
-        setGenStatus(note + ' · ' + password.length + ' caracteres · ' + bits + ' bits', 'ok');
+        const drift = (reported && num(reported) !== password.length) ? 'pediste ' + num(reported) + ', devolvió ' : '';
+        setGenStatus(note + ' · ' + drift + password.length + ' caracteres · ' + bits + ' bits', 'ok');
     }
 
     function doGenerate(event) {
         if (event) event.preventDefault();
-        const length = Math.max(num(POLICY.data.min_length), num(E['gen-length'] && E['gen-length'].value) || 20);
+        // El mínimo de la política manda, pero el slider es la longitud real que
+        // quiere el usuario: 12 por defecto en el HTML y hasta 64.
+        const length = Math.max(num(POLICY.data.min_length), intField(E['gen-length'], 20));
         setGenStatus('Generando…', '');
 
         request('/api/generate', {
@@ -480,13 +536,13 @@
             body: { length: length, alphabet: 'web', avoid_ambiguous: true, min_classes: 4 }
         }).then(function (body) {
             if (body && str(body.password)) {
-                renderGenerated(str(body.password), 'Generada por el servidor');
+                renderGenerated(str(body.password), 'Generada por el servidor', num(body.length));
             } else {
-                renderGenerated(generateLocal(length), 'Generada en el navegador');
+                renderGenerated(generateLocal(length), 'Generada en el navegador', length);
             }
         }).catch(function (err) {
             if (isAbort(err)) return;
-            renderGenerated(generateLocal(length), 'Generada en el navegador (sin servidor)');
+            renderGenerated(generateLocal(length), 'Generada en el navegador (sin servidor)', length);
         });
     }
 

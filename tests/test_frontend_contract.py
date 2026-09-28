@@ -277,6 +277,32 @@ def test_request_payloads_from_the_client_are_valid(client, app_js):
     )
 
 
+def test_num_is_never_handed_an_input_value(app_js):
+    """`num()` protege un número de la respuesta JSON. Un `input.value` es texto.
+
+    Este bug existió y era invisible. `HTMLInputElement.value` siempre es
+    string, así que `num(slider.value)` devolvía 0, el `|| 20` de al lado lo
+    tapaba y el generador entregaba 20 caracteres pase lo que pase el slider,
+    mientras la etiqueta de al lado marcaba la longitud pedida. Los 97 tests
+    pasaban: el fallo estaba en el parseo del DOM, no en un contrato entre
+    ficheros.
+
+    El invariante no depende de qué línea sea: `num()` nunca recibe un
+    `.value`, porque el resultado siempre sería 0. Y un 0 envuelto en un `||` o
+    en un `Math.max` es el peor tipo de fallo posible, porque no da error.
+    """
+    code = _strip_comments(app_js)
+    calls = re.findall(r"\bnum\(([^()]*)\)", code)
+    assert calls, "no se encontró ninguna llamada a num() en app.js"
+
+    for arg in calls:
+        assert ".value" not in arg, (
+            f"num({arg.strip()}) recibe un input.value, que siempre es texto: "
+            f"devuelve 0 en silencio. Usa intField(node, fallback) para leer "
+            f"valores de un <input>."
+        )
+
+
 def test_health_response_shape(client):
     body = client.get("/api/health").get_json()
     # app.js decide si mostrar el indicador "servidor en línea" con esto.

@@ -86,7 +86,7 @@ defecto, así que el CORS funciona sin configurar nada.
 pytest -q
 ```
 
-97 pruebas repartidas en cuatro ficheros, y cada una falla por un motivo
+98 pruebas repartidas en cuatro ficheros, y cada una falla por un motivo
 distinto:
 
 | Fichero | Qué fija |
@@ -118,6 +118,15 @@ propósito. Sin servidor la página no puede consultar el corpus de 3.755
 contraseñas, y un espejo desalineado aprobaría en local lo que el servidor
 rechaza. Los tests comparan sus 11 reglas y sus reglas críticas una a una con
 `policy.py`, así que la divergencia salta en la suite y no en una demostración.
+
+Y la regla que gobierna todo el respaldo local: **el cliente no puede ser más
+estricto que el servidor.** Ser más laxo es un aviso; rechazar de más es
+mentir, solo que al revés. Por eso `REPEAT_MIN_LENGTH` en `app.js` tiene que
+valer lo mismo que `min_length` en `patterns.py`: cuando el cliente marcaba
+cualquier carácter repetido dos veces y el servidor exigía bloques de tres,
+`Qaa1b2c3d4e5!` pasaba en el servidor y se rechazaba sin servidor. El único
+criterio que el respaldo local deja de lado es la nota, y por eso se llama
+`estimación local`.
 
 ## API
 
