@@ -240,6 +240,26 @@ despliegue:
 apiBase: 'https://<cuenta>.pythonanywhere.com'
 ```
 
+Y una cosa que conviene saber antes de extrañar una diferencia: **el
+`index.html` que se publica no es idéntico al del repositorio.** El workflow le
+añade `?v=<sha>` a las referencias de `styles.css`, `config.js` y `app.js`.
+
+El motivo es la caché. GitHub Pages responde con `Cache-Control: max-age=600` y
+GitHub no permite cambiarlo, así que el navegador guarda esos ficheros diez
+minutos. Sin el `?v=`, quien abre la web después de un despliegue puede estar
+viendo la versión anterior, y el síntoma es desconcertante: la página anunciaba
+"modo local · sin backend" con el backend funcionando y el CORS ya resuelto. El
+`?v=` cambia la clave de caché, así que cada despliegue entrega URLs nuevas y la
+caché no puede servir nada viejo.
+
+La contrapartida es que la ventana de diez minutos no desaparece del todo,
+solo se reduce a un fichero. `index.html` también pasa por la caché y no lleva
+`?v=` —no puede, es justamente el que decide cuál le pone a los demás—, así
+que quien abra la web dentro de esos diez minutos tras un despliegue todavía
+recibe el HTML anterior. En ese caso hace falta un refresco forzado, o esperar,
+y a partir de ahí todo entra limpio. Antes el riesgo eran los tres recursos;
+ahora es solo el documento que decide cuáles son.
+
 ### API: PythonAnywhere
 
 Primero, tener el código en el servidor. En el plan gratuito no hay integración

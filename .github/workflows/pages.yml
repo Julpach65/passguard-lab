@@ -46,6 +46,37 @@ jobs:
         with:
           enablement: true
 
+      # GitHub Pages responde con Cache-Control: max-age=600, y el navegador
+      # guarda config.js, app.js y styles.css diez minutos. Sin este paso, quien
+      # abre la web justo despues de un despliegue puede estar viendo la version
+      # anterior. No es hipotesis: abrio la pagina con el config.js viejo, el que
+      # tenia apiBase vacio, y mostro "modo local - sin backend" con el backend
+      # funcionando y el CORS ya resuelto.
+      #
+      # Anadir el sha a la URL cambia la clave de cache, asi que cada despliegue
+      # entrega URLs nuevas y la cache no puede servir nada viejo. El patron solo
+        # toca los tres recursos del sitio: el favicon data: y las anclas internas
+        # no se ven, porque no son .js ni .css.
+      #
+      # Ojo con la consecuencia: esto modifica el index.html de la copia de
+      # trabajo, no el del repositorio. Lo que se publica lleva ?v=<sha> y lo que
+      # hay en static/index.html, no. Es a proposito, pero conviene saberlo antes
+      # de extrañar que el HTML servido no coincide con el del repo.
+      - name: Marcar los recursos con la versión
+        run: |
+          sha="$(git rev-parse --short HEAD)"
+          sed -i -E "s|(src|href)=\"(config\.js|app\.js|styles\.css)\"|\1=\"\2?v=$sha\"|g" static/index.html
+          # El "|| true" no es cosmetico. GitHub ejecuta los pasos con bash -e, y
+          # grep -c sale con codigo 1 cuando no encuentra nada. Sin el, el paso
+          # moriria en esa linea con un fallo a secas y la comprobacion de abajo
+          # no llegaria a ejecutarse nunca, que es justo cuando hace falta.
+          count="$(grep -c "?v=$sha" static/index.html || true)"
+          echo "recursos versionados: $count (se esperan 3)"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::el patron no versiono nada. Revisa los src/href de index.html."
+            exit 1
+          fi
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: static
