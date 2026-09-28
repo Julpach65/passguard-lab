@@ -11,16 +11,17 @@
      - URL absoluta: las peticiones van a ese host. Sin barra final y sin /api,
        porque app.js ya añade /api/... por su cuenta.
 
-     Antes de rellenar esto, el servidor tiene que permitir este origen. En
-     PythonAnywhere:
+      Antes de rellenar esto, el servidor tiene que permitir este origen.
+      PythonAnywhere NO tiene un apartado de variables de entorno en el panel:
+      la variable va dentro del fichero WSGI, en la línea
+      os.environ['PASSGUARD_ALLOWED_ORIGINS'].
 
-       Web -> Edit -> Environment variables -> Add
-       PASSGUARD_ALLOWED_ORIGINS = https://<USUARIO>.github.io
-       (después, Reload)
+        Web -> WSGI configuration file -> borrar todo y pegar el contenido de
+        deploy/wsgi_pythonanywhere.py -> Reload
 
-     Sin esa variable el navegador bloquea la respuesta y la página cae en
-     modo local. La lista blanca NO admite comodines: es un origen exacto, sin
-     ruta, sin barra final.
+      Sin esa línea el navegador bloquea la respuesta y la página cae en modo
+      local. La lista blanca NO admite comodines: es un origen exacto, sin
+      ruta, sin barra final.
 
      Ejemplo de desarrollo con la arquitectura partida en dos puertos:
        1. python app.py                      -> API en http://127.0.0.1:5000
@@ -39,5 +40,5 @@
    ========================================================================== */
 
 window.PASSGUARD_CONFIG = {
-  apiBase: ""
+  apiBase: "https://julpach65.pythonanywhere.com"
 };
