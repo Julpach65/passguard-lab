@@ -43,6 +43,17 @@ SCORE_LITERAL = re.compile(
 )
 
 
+def _strip_comments(source: str) -> str:
+    """Quita comentarios de línea y de bloque.
+
+    Necesario para buscar símbolos en el código y no en la prosa que lo
+    rodea: un comentario que explica por qué se eliminó `pw_hmac` contiene la
+    palabra, y un test que solo busca cadenas concluiría que el bug sigue vivo.
+    """
+    without_block = re.sub(r"/\*.*?\*/", " ", source, flags=re.DOTALL)
+    return re.sub(r"//[^\n]*", " ", without_block)
+
+
 def _mirror_block(app_js: str) -> str:
     """El trozo de `app.js` que contiene el espejo de política."""
     start = app_js.index("FALLBACK_POLICY")
@@ -206,6 +217,55 @@ def test_audit_response_has_the_receipt_the_client_shows(client):
     ).get_json()
     assert "receipt" in body
     assert "audit_id" in body
+
+
+def test_client_sends_the_password_the_server_actually_expects(app_js):
+    """Lo que el navegador manda a /api/audit tiene que ser lo que el servidor lee.
+
+    Este fallo existió: app.js calculaba un HMAC en el cliente y lo enviaba como
+    `pw_hmac` junto a un score propio, mientras que /api/audit recalcula el
+    análisis desde `password` e ignora todo lo demás. Con red, la auditoría
+    respondía 400 "Falta 'password'". Los tests del servidor pasaban porque
+    ellos sí mandaban `password`: el contrato comprobaba al servidor, nunca lo
+    que el navegador envía.
+    """
+    code = _strip_comments(app_js)
+    audit_call = re.search(
+        r"api\.audit\(\{(?P<body>.*?)\}\)", code, re.DOTALL
+    )
+    assert audit_call, (
+        "no se encuentra una llamada api.audit({ ... }) con el payload en línea. "
+        "Se exige el literal en línea a propósito: si el payload se construye en "
+        "una variable aparte, este test no puede leerlo y el contrato volvería a "
+        "quedar sin comprobar, que es justo como pasó con este bug."
+    )
+    payload = audit_call.group("body")
+
+    # El servidor exige 'password': es el único campo que hace falta.
+    assert re.search(r"\bpassword\s*:", payload), (
+        f"api.audit() no envía 'password'; el servidor responde 400. Payload: {payload.strip()}"
+    )
+
+    # Y no debe mandar campos que el servidor ignora: enviar un score propio
+    # sugiere que el cliente participa en el veredicto, y no es así.
+    for dead in ("pw_hmac", "score", "guesses_log10", "findings", "policy_id"):
+        assert not re.search(rf"\b{dead}\s*:", payload), (
+            f"api.audit() envía {dead!r}, que /api/audit ignora: el veredicto es "
+            f"del servidor. Payload: {payload.strip()}"
+        )
+
+
+def test_client_never_computes_the_audit_hmac(app_js):
+    """La clave del HMAC vive en el servidor y no sale de él.
+
+    Un HMAC calculado en el navegador jamás podría compararse con el del
+    servidor, así que mantener ese código era mantener una illusion.
+    """
+    for dead in ("hmacOf", "pw_hmac", "SESSION_KEY", "subtle.sign"):
+        assert dead not in _strip_comments(app_js), (
+            f"app.js todavía contiene {dead!r}: el HMAC de auditoría lo calcula "
+            f"el servidor, no el cliente"
+        )
 
 
 def test_client_policy_mirror_matches_the_server(client, app_js):

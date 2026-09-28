@@ -1440,35 +1440,13 @@
 
   /* -------------------------------------------------------- auditoria */
 
-  // Clave efímera de sesión: el HMAC sirve para que el servidor pueda correlacion
-  // dos análisis del mismo cliente sin recibir jamás la contraseña. Se descarta
-  // al cerrar la pestana, asi que dos recibos del mismo usuario no son
-  // comparables entre sesiones.
-  const SESSION_KEY = (function makeSessionKey() {
-    const bytes = new Uint8Array(32);
-    if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
-      window.crypto.getRandomValues(bytes);
-    } else {
-      for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
-    }
-    return bytes;
-  }());
-
-  function toHex(buffer) {
-    return Array.from(new Uint8Array(buffer)).map((b) => b.toString(16).padStart(2, '0')).join('');
-  }
-
-  async function hmacOf(password) {
-    if (!window.crypto || !window.crypto.subtle) return null;
-    try {
-      const key = await window.crypto.subtle.importKey('raw', SESSION_KEY, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-      const signature = await window.crypto.subtle.sign('HMAC', key, new TextEncoder().encode(password));
-      return toHex(signature);
-    } catch (err) {
-      return null;
-    }
-  }
-
+  // El HMAC lo calcula el servidor, no el navegador. Aqui hubo antes una clave
+  // de sesion en el cliente que掐 signs el HMAC y lo mandaba como pw_hmac, pero
+  // eso no puede funcionar: la clave del servidor nunca sale de el, asi que el
+  // HMAC del cliente jamas coincidiria con el suyo. Ademas /api/audit no acepta
+  // pw_hmac: recalcula el analisis y el HMAC desde la contraseña que recibe, e
+  // ignora el score que le mande el cliente. Por eso el payload es solo la
+  // contraseña y el contexto, y el veredicto del recibo es el del servidor.
   function setAuditStatus(text, state) {
     const node = E['audit-status'];
     if (!node) return;
@@ -1485,15 +1463,10 @@
     if (!currentResult) return;
     setAuditStatus('emitiendo...', 'idle');
     try {
-      const hmac = await hmacOf(input.value);
-      const payload = {
-        policy_id: POLICY.policy_id,
-        score: num(currentResult.score),
-        guesses_log10: num(currentResult.guesses_log10),
-        findings: arr(currentResult.findings).map((f) => str(f && f.id)).filter(Boolean),
-        pw_hmac: hmac
-      };
-      const raw = await api.audit(payload);
+      const raw = await api.audit({
+        password: input.value,
+        context: []
+      });
       const receipt = str(raw && raw.receipt, '');
       setText('audit-receipt', receipt
         ? 'id ' + str(raw.audit_id) + ' \u00b7 ' + str(raw.ts) + '\n' + receipt
