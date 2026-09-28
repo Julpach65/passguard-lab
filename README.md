@@ -203,26 +203,74 @@ apiBase: 'https://<cuenta>.pythonanywhere.com'
 
 ### API: PythonAnywhere
 
-En el panel, en la web app:
+Primero, tener el código en el servidor. En el plan gratuito no hay integración
+de Git en el panel, así que se usa la **consola Bash** (pestaña *Consoles*):
 
-1. **Source code**: subir el repositorio y fijar el directorio a la raíz.
-2. **WSGI configuration file**: `from wsgi import app`.
-3. **Environment variables**:
+```bash
+git clone https://github.com/Julpach65/passguard-lab.git ~/passguard-lab
+cd ~/passguard-lab
+python3 -c "import flask; print(flask.__version__)" || pip install --user "flask>=3.0,<4"
+```
+
+El corpus viene en el repositorio, así que no hay que generarlo.
+
+Después, en la pestaña **Web**, *Add a new web app* → framework **Flask** →
+dominio `<cuenta>.pythonanywhere.com`, con el directorio de código fijado en
+`/home/<cuenta>/passguard-lab`.
+
+1. **WSGI configuration file**: abrir el fichero que genera el panel y
+   **borrar su contenido entero** por este. No vale con poner solo
+   `from wsgi import app`:
+
+   ```python
+   import os
+   import sys
+
+   # Imprescindible: el fichero WSGI que genera PythonAnywhere vive en
+   # var/www/, no en el proyecto, y solo añade su propio directorio a
+   # sys.path. Como wsgi.py hace "from app import app", el proyecto tiene que
+   # estar en la ruta o el import falla con ModuleNotFoundError.
+   path = os.path.expanduser('~/passguard-lab')
+   if path not in sys.path:
+       sys.path.insert(0, path)
+
+   from wsgi import app  # noqa: E402
+   ```
+
+2. **Environment variables**:
 
    ```
    PASSGUARD_ALLOWED_ORIGINS=https://julpach65.github.io
-   PASSGUARD_CORPUS_PATH=/home/<cuenta>/passguard-lab/data/corpus.txt
    ```
 
-4. Recargar la web app.
+   Solo esa. `PASSGUARD_CORPUS_PATH` no hace falta: su valor por defecto ya
+   resuelve a `<raíz del proyecto>/data/corpus.txt`. Sin la subruta
+   `/passguard-lab` en el origen, porque `Origin` nunca la lleva.
+
+3. **Reload** en la web app.
+
+Comprobación desde fuera, que es la que de verdad importa:
+
+```bash
+curl -i https://<cuenta>.pythonanywhere.com/api/health
+curl -i -X POST https://<cuenta>.pythonanywhere.com/api/analyze \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: https://julpach65.github.io' \
+  -H 'X-Passguard-Client: 1' \
+  -d '{"password":"aA1!aA1!aA1!aA1!","context":[]}'
+```
+
+Lo que sale de esa última llamada es el punto de la entrega: una contraseña que
+cumple las cinco reglas y a la vez el veredicto la rechaza.
 
 `PASSGUARD_DEBUG` no se define: su ausencia ya significa desactivado, y ese es
 el valor por defecto a propósito. No hay ninguna variable para la clave de
 auditoría porque no debe existir: se genera sola en memoria en cada arranque.
 
 Dos cosas del plan gratuito que conviene tener presentes: **la web app caduca
-cada mes y hay que renovarla a mano**, y la salida a Internet está restringida a
-una lista blanca, así que la consulta a HIBP probablemente no funcione. Esa ruta
+cada mes y hay que renovarla a mano**, o el enlace del profesor deja de
+funcionar a mitad de semestre; y la salida a Internet puede estar limitada según
+el plan y el destino, así que la consulta a HIBP puede no llegar. Esa ruta
 degrada a `{"available": false}` con un 200 en lugar de romper la interfaz, por
 ser un servicio opcional.
 
