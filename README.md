@@ -257,38 +257,44 @@ Después, en la pestaña **Web**, *Add a new web app* → framework **Flask** �
 dominio `<cuenta>.pythonanywhere.com`, con el directorio de código fijado en
 `/home/<cuenta>/passguard-lab`.
 
-1. **WSGI configuration file**: abrir el fichero que genera el panel y
-   **borrar su contenido entero** por este. No vale con poner solo
-   `from wsgi import app`:
+1. **WSGI configuration file**: arriba del todo del bloque de la web app está
+   el enlace que abre `/var/www/<cuenta>_pythonanywhere_com_wsgi.py`. Seleccionar
+   todo su contenido y pegarlo entero. El fichero ya está en el repo, listo para
+   copiar, en `deploy/wsgi_pythonanywhere.py`, con el motivo de cada línea
+   escrito al lado.
+
+   **Las variables de entorno van en este mismo fichero**, no en un apartado del
+   panel: PythonAnywhere no tiene ningún campo para declararlas. Lo único que
+   se ejecuta antes de servir algo es el WSGI, así que es el único sitio donde
+   el proceso web las ve. Un `export` en la consola Bash funciona en la consola
+   y nowhere más, y el fallo clásico es ponerlo ahí, comprobar que la consola sí
+   lo ve, y que la web siga devolviendo 403.
+
+   Lo que trae, y por qué no se puede dejar solo `from wsgi import app`:
 
    ```python
+   import os
    import sys
 
-   # Imprescindible: el fichero WSGI que genera PythonAnywhere vive en
-   # /var/www/, no en el proyecto, y solo añade su propio directorio a
-   # sys.path. Como wsgi.py hace "from app import app", el proyecto tiene que
-   # estar en la ruta o el import falla con ModuleNotFoundError.
+   # Este fichero vive en /var/www/, fuera del proyecto, y PythonAnywhere solo
+   # anade su propio directorio a la ruta. Sin esta linea, ModuleNotFoundError.
    path = '/home/<cuenta>/passguard-lab'
    if path not in sys.path:
        sys.path.insert(0, path)
 
-   # "as application" no es cosmético: PythonAnywhere busca una variable
-   # llamada exactamente application en este fichero. Sin el alias, el
-   # servidor no encuentra nada que servir.
+   # Sin la subruta /passguard-lab, porque Origin nunca la lleva.
+   os.environ['PASSGUARD_ALLOWED_ORIGINS'] = 'https://julpach65.github.io'
+
+   # PythonAnywhere busca una variable llamada exactamente "application".
    from wsgi import app as application  # noqa: E402
    ```
 
-2. **Environment variables**:
+2. **Reload** en la misma pestaña.
 
-   ```
-   PASSGUARD_ALLOWED_ORIGINS=https://julpach65.github.io
-   ```
-
-   Solo esa. `PASSGUARD_CORPUS_PATH` no hace falta: su valor por defecto ya
-   resuelve a `<raíz del proyecto>/data/corpus.txt`. Sin la subruta
-   `/passguard-lab` en el origen, porque `Origin` nunca la lleva.
-
-3. **Reload** en la web app.
+Solo se declara `PASSGUARD_ALLOWED_ORIGINS`. `PASSGUARD_CORPUS_PATH` no hace
+falta: su valor por defecto ya resuelve a `<raíz del proyecto>/data/corpus.txt`.
+La clave de firma se genera en memoria al arrancar, así que no hay ningún otro
+secreto que declarar.
 
 Comprobación desde fuera, que es la que de verdad importa:
 
