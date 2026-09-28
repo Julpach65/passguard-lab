@@ -38,7 +38,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # enablement: true deja que la propia action cree el sitio Pages si no
+      # existe todavia. Sin esto, el primer run falla con "Get Pages site
+      # failed" en cuanto alguien clona el repo y no ha activado Pages a mano
+      # antes, que es justo lo que pasa la primera vez en cualquier repo nuevo.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
